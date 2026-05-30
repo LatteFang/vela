@@ -124,9 +124,11 @@ export class InferGlobalSettingsCommand extends BaseWorkflowCommand<void> {
         const results = await ipc.invoke('kb:search', topic.query, 5)
         if (results.length > 0) {
           sampledContent[topic.key] = results
-            .map((r: { text: string; score: number; fileName: string }, i: number) =>
-              `[${i + 1}] (${r.fileName}, 相关度 ${(r.score * 100).toFixed(0)}%)\n${r.text}`
-            ).join('\n\n')
+            .map((r: { text: string; score: number; fileName: string }, i: number) => {
+              // 截断每条向量结果，避免 Prompt 过长导致输出被 max_tokens 截断
+              const truncated = r.text.length > 500 ? r.text.slice(0, 500) + '...' : r.text
+              return `[${i + 1}] (${r.fileName}, 相关度 ${(r.score * 100).toFixed(0)}%)\n${truncated}`
+            }).join('\n\n')
         } else {
           sampledContent[topic.key] = '（未检索到相关内容）'
         }
@@ -144,8 +146,8 @@ export class InferGlobalSettingsCommand extends BaseWorkflowCommand<void> {
       || getPromptTemplate('infer_novel_config')
     if (!template) throw new Error('未找到推演 Prompt 模板')
 
-    const firstChapter = chapters[0]?.content?.slice(0, 3000) || '（第一章内容不可用）'
-    const latestChapter = chapters[chapters.length - 1]?.content?.slice(0, 3000) || '（最新章节不可用）'
+    const firstChapter = chapters[0]?.content?.slice(0, 2000) || '（第一章内容不可用）'
+    const latestChapter = chapters[chapters.length - 1]?.content?.slice(0, 2000) || '（最新章节不可用）'
 
     const prompt = new ImportPromptBuilder(template)
       .withSampledWorldview(sampledContent.worldview || '')
@@ -166,7 +168,7 @@ export class InferGlobalSettingsCommand extends BaseWorkflowCommand<void> {
       prompt,
       template.systemRole || '你是一位顶级网文主编和资深阅读分析师。',
       callbacks,
-      { responseFormat: { type: 'json_object' } }
+      { responseFormat: { type: 'json_object' }, maxTokens: 16000 }
     )
 
     callbacks.setProgress(70)

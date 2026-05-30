@@ -45,7 +45,7 @@ interface LLMState {
     messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
     callbacks: StreamCallbacks,
     modelId?: string,
-    options?: { responseFormat?: { type: string }; thinking?: boolean }
+    options?: { responseFormat?: { type: string }; thinking?: boolean; maxTokens?: number }
   ) => Promise<string>
   /** 取消生成 */
   cancelGeneration: (requestId: string) => Promise<void>
@@ -178,7 +178,8 @@ export const useLLMStore = create<LLMState>()((set, get) => ({
       messages,
       stream: true,
       responseFormat: options?.responseFormat as { type: 'json_object' | 'text' } | undefined,
-      thinking: options?.thinking
+      thinking: options?.thinking,
+      maxTokens: options?.maxTokens
     })
 
     return requestId

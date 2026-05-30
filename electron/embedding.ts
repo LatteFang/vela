@@ -16,7 +16,7 @@ export async function embedOpenAI(
   model: { baseUrl: string; apiKey: string; modelName?: string },
 ): Promise<number[][]> {
   const embeddingModel = model.modelName || 'text-embedding-3-small'
-  const url = model.baseUrl.replace(/\/$/, '') + '/embeddings'
+  const url = model.baseUrl.replace(/\/$/, '') + '/v1/embeddings'
   const res = await fetch(url, {
     method: 'POST',
     headers: {
@@ -35,7 +35,11 @@ export async function embedOpenAI(
   }
 
   const data = await res.json() as {
-    data: Array<{ embedding: number[]; index: number }>
+    data?: Array<{ embedding: number[]; index: number }>
+  }
+
+  if (!data.data || !Array.isArray(data.data)) {
+    throw new Error(`Embedding 响应格式异常：缺少 data 数组，请检查 API 地址是否正确（Ollama 请使用 /v1 路径）`)
   }
 
   // 按 index 排序确保顺序一致

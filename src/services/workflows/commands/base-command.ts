@@ -23,7 +23,7 @@ export abstract class BaseWorkflowCommand<TResult = string> {
     prompt: string, 
     systemPrompt: string, 
     callbacks: StepCallbacks,
-    options?: { responseFormat?: { type: string }; thinking?: boolean },
+    options?: { responseFormat?: { type: string }; thinking?: boolean; maxTokens?: number },
     context?: WorkflowContext
   ): Promise<string> {
     const llmStore = useLLMStore.getState()
@@ -108,7 +108,7 @@ export abstract class BaseWorkflowCommand<TResult = string> {
   protected async callLLMWithBuilder(
     builder: BasePromptBuilder,
     callbacks: StepCallbacks,
-    options?: { responseFormat?: { type: string }; thinking?: boolean },
+    options?: { responseFormat?: { type: string }; thinking?: boolean; maxTokens?: number },
     context?: WorkflowContext
   ): Promise<string> {
     return this.callLLM(builder.build(), builder.getSystemRole(), callbacks, options, context)
@@ -140,11 +140,86 @@ export abstract class BaseWorkflowCommand<TResult = string> {
       } else if (firstBracket !== -1 && lastBracket !== -1) {
         cleanText = cleanText.substring(firstBracket, lastBracket + 1)
       }
-      
-      return JSON.parse(cleanText) as T
+
+      try {
+        return JSON.parse(cleanText) as T
+      } catch (parseErr) {
+        // 3. 截断恢复：尝试追加缺失的闭合括号
+        const repaired = this.repairTruncatedJSON(cleanText)
+        if (repaired) {
+          return JSON.parse(repaired) as T
+        }
+        throw parseErr
+      }
     } catch {
-      throw new Error(`AI 返回的数据格式乱码，无法解析为有效层级结构。尝试解析内容末端: ${text.slice(-100)}`)
+      // 4. 友好错误提示：给出具体诊断信息
+      const trimmed = text.replace(/\s+/g, ' ').trim()
+      const tail = trimmed.slice(-120)
+      const isTruncated = this.looksTruncatedJSON(tail)
+      const hint = isTruncated
+        ? '\n→ 响应疑似被 max_tokens 截断，建议：增加模型配置的 max_tokens（至少 16000）或更换更大上下文模型'
+        : ''
+      throw new Error(
+        `AI 返回的数据格式乱码，无法解析为有效层级结构。${hint}\n响应内容末端: ${tail}`
+      )
     }
+  }
+
+  /**
+   * 尝试修复被截断的 JSON
+   * 常见模式：模型在输出长 JSON 时被 max_tokens 截断，最后一个对象字段不完整
+   */
+  private repairTruncatedJSON(text: string): string | null {
+    // 策略：向后扫描找到最后的完整体 JSON 值，追加缺失的闭合符号
+    // 检查是否在字符串值中间被截断
+    const lastQuote = text.lastIndexOf('"')
+    const lastColon = text.lastIndexOf(':')
+
+    // 如果末尾在字符串内容中（有未闭合的引号），移除该不完整字段
+    if (lastQuote > lastColon && text.lastIndexOf('":', lastQuote) === -1) {
+      // 向前找到该字段的 key 开始位置
+      const beforeKey = text.lastIndexOf('",', lastQuote)
+      if (beforeKey !== -1) {
+        // 截断到上一个完整字段末尾，然后闭合剩余结构
+        let fixed = text.substring(0, beforeKey + 1)
+        // 补全缺失的闭合符号：尝试统计并补充 } ] }
+        const openBraces = (fixed.match(/\{/g) || []).length
+        const closeBraces = (fixed.match(/\}/g) || []).length
+        const openBrackets = (fixed.match(/\[/g) || []).length
+        const closeBrackets = (fixed.match(/\]/g) || []).length
+
+        // 先闭合数组再闭合对象（符合 JSON 嵌套层级）
+        if (closeBrackets < openBrackets) {
+          fixed += ']'.repeat(openBrackets - closeBrackets)
+        }
+        if (closeBraces < openBraces) {
+          fixed += '}'.repeat(openBraces - closeBraces)
+        }
+
+        // 验证修复结果
+        try {
+          JSON.parse(fixed)
+          return fixed
+        } catch {
+          // 修复失败，返回 null
+        }
+      }
+    }
+    return null
+  }
+
+  /**
+   * 判断 JSON 结尾是否看起来像被截断（而非格式错误）
+   */
+  private looksTruncatedJSON(tail: string): boolean {
+    // 如果末尾不在合法的 JSON 终止符上（}, ], "），且不在引号内的值结尾，则可能是截断
+    const trimmed = tail.trimEnd()
+    if (trimmed.endsWith('}') || trimmed.endsWith(']') || trimmed.endsWith('"')) return false
+    // 末尾有冒号或逗号，明显被截断
+    if (trimmed.endsWith(':') || trimmed.endsWith(',')) return true
+    // 末尾是大段文字（可能在字段值中间），被截断
+    if (trimmed.length > 10 && !trimmed.includes('"') && !trimmed.includes('{')) return true
+    return false
   }
 
   /**
